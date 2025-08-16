@@ -1,0 +1,93 @@
+name: Build and Push to GHCR
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "Dockerfile"
+      - "package.json"
+      - ".yarnrc.yml"
+      - "yarn.lock"
+      - "src/**"
+      - "medusa-config.ts"
+      - "instrumentation.ts"
+      - ".github/workflows/docker-publish.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (defaults to package.json version)"
+        required: false
+      platforms:
+        description: "Platforms to build (comma separated)"
+        required: false
+        default: "linux/amd64"
+      latest:
+        description: "Also push :latest tag"
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tags/platforms
+        id: vars
+        shell: bash
+        run: |
+          TAG_INPUT='${{ github.event.inputs.tag }}'
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
+          else
+            if command -v jq >/dev/null 2>&1; then
+              TAG=$(jq -r .version package.json)
+            else
+              TAG=$(grep '"version"' package.json | head -n1 | sed -E 's/.*"version"\s*:\s*"([^"]+)".*/\1/')
+            fi
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+
+          PLAT_INPUT='${{ github.event.inputs.platforms }}'
+          if [ -n "$PLAT_INPUT" ]; then
+            PLATFORMS="$PLAT_INPUT"
+          else
+            PLATFORMS='linux/amd64'
+          fi
+          echo "PLATFORMS=$PLATFORMS" >> "$GITHUB_OUTPUT"
+
+          if [ '${{ github.event.inputs.latest }}' = 'false' ]; then
+            echo "LATEST=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "LATEST=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ steps.vars.outputs.PLATFORMS }}
+          tags: |
+            ghcr.io/ahmedy0unes/medusa-starter-default:${{ steps.vars.outputs.TAG }}
+            ${{ steps.vars.outputs.LATEST == 'true' && 'ghcr.io/ahmedy0unes/medusa-starter-default:latest' || '' }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
